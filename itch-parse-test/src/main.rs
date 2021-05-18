@@ -1,23 +1,20 @@
+use std::env;
+
+use std::fs::File;
+use std::path::Path;
 
 use std::io;
 use std::io::prelude::*;
-use std::fs::File;
-use std::path::Path;
-use std::env;
-
 use std::io::BufReader;
-use std::io::BufRead;
-
-
-use std::time::Instant;
 
 use std::collections::hash_map::Entry;
-
-
 use std::collections::HashMap;
 
+//testing and debugs
+use std::time::Instant;
 const DEBUG : bool = false;
 const OUTPUT : bool = true;
+
 
 struct PriceLevel {
 	price: u32, 
@@ -100,7 +97,7 @@ fn remove_order(book: &mut Book, order: & Order) {
 	levels.remove(pos);
 }
 
-fn as_u64_be6(array: &[u8; 6]) -> u64 {
+fn as_u64_be6(array: &[u8]) -> u64 {
     ((array[0] as u64) << 40) +
     ((array[1] as u64) << 32) +
     ((array[2] as u64) << 24) +
@@ -109,7 +106,7 @@ fn as_u64_be6(array: &[u8; 6]) -> u64 {
     ((array[5] as u64) <<  0)
 }
 
-fn as_u64_be8(array: &[u8; 8]) -> u64 {
+fn as_u64_be8(array: &[u8]) -> u64 {
 	((array[0] as u64) << 56) +
     ((array[1] as u64) << 48) +
     ((array[2] as u64) << 40) +
@@ -120,129 +117,73 @@ fn as_u64_be8(array: &[u8; 8]) -> u64 {
     ((array[7] as u64) <<  0)
 }
 
-fn as_u32_be4(array: &[u8; 4]) -> u32 {
+fn as_u32_be4(array: &[u8]) -> u32 {
     ((array[0] as u32) << 24) +
     ((array[1] as u32) << 16) +
     ((array[2] as u32) <<  8) +
     ((array[3] as u32) <<  0)
 }
 
-fn as_u32_be2(array: &[u8; 2]) -> u32 {
+fn as_u32_be2(array: &[u8]) -> u32 {
     ((array[0] as u32) <<  8) +
     ((array[1] as u32) <<  0)
 }
 
 
-fn extract_timestamp<R: BufRead>(f: &mut R) -> u32 {
+fn process_system_event(data: &[u8]) -> char {
 
-	//just skiping it for now
-	let mut timestamp_buffer = [0; 6];
-	match f.read_exact(&mut timestamp_buffer) {
-		Err(_why) => return 0,
-		Ok(_read) => return 0
-	}
+	let tracking = as_u32_be2(&data[3..5]);
+	if DEBUG { println!("tracking: {}", tracking) };
 
-}
+	let _ts = as_u64_be6(&data[5..11]);
 
-fn process_system_event<R: BufRead>(f: &mut R) -> io::Result<char> {
-
-	//just want the event code
-	let mut skip = [0; 10];
-	f.read_exact(&mut skip)?;
-	
-	let mut event_code = [0; 1];
-	f.read_exact(&mut event_code)?;  
-
-	let ec = event_code[0] as char;
+	let ec = data[11] as char;
 
 	if OUTPUT { println!("Event Code:{}", ec);}
-	Ok(ec)
+
+	ec
 }
 
-fn process_stock_map<R: BufRead>(f: &mut R, stocks: &mut HashMap<u32, String>) -> io::Result<()> {
+fn process_stock_map(data: &[u8], stocks: &mut HashMap<u32, String>) {
 
-	let mut locate = [0; 2];
-	f.read_exact(&mut locate)?;  
+	let locate = as_u32_be2(&data[1..3]);
 
-	let locate = as_u32_be2(&locate);
+	let tracking = as_u32_be2(&data[3..5]);
+	if DEBUG { println!("tracking: {}", tracking) };
 
-	//don't think i need to care
-	let mut tracking = [0; 2];
-	f.read_exact(&mut tracking)?;  
-
-	if DEBUG { println!("tracking: {}", as_u32_be2(&tracking)) };
-
-	let _ts = extract_timestamp(f);
+	let _ts = as_u64_be6(&data[5..11]);
 	
-	let mut stock_buff = [0; 8];
-	f.read_exact(&mut stock_buff)?;
-
-	let stock_name = String::from_utf8_lossy(&stock_buff).to_string();
+	let stock_name = String::from_utf8_lossy(&data[11..19]).to_string();
 	
 	if OUTPUT { println!("Adding {} at {}", stock_name, locate); }
 
 	stocks.insert(locate, stock_name);
 	
 	//don't care about the rest
-	let mut skip = [0; 20];
-	f.read_exact(&mut skip)?;
-
-	Ok(())
+	
 }
 
-fn process_add_order<R: BufRead>(f: &mut R, orders: &mut HashMap<u64, Order>, books: &mut HashMap<String, Book>, attribution: bool) -> io::Result<()> {
+fn process_add_order(data: &[u8], orders: &mut HashMap<u64, Order>, books: &mut HashMap<String, Book>, attribution: bool) {
 
-	let mut locate = [0; 2];
-	f.read_exact(&mut locate)?;  
+	let _locate = as_u32_be2(&data[1..3]);
 
-	let _locate = as_u32_be2(&locate) as usize;
+	let tracking = as_u32_be2(&data[3..5]);
+	if DEBUG { println!("tracking: {}", tracking) };
 
-	//don't think i need to care
-	let mut tracking = [0; 2];
-	f.read_exact(&mut tracking)?;  
-
-	if DEBUG { println!("tracking: {}", as_u32_be2(&tracking)) };
-
-	let _ts = extract_timestamp(f);
-
-	//will need this eventually for some better magic
-	let mut orn = [0; 8];
-	f.read_exact(&mut orn)?;  
-	let orn = as_u64_be8(&orn);
+	let _ts = as_u64_be6(&data[5..11]);
 	
-	let mut side = [0; 1];
-	f.read_exact(&mut side)?;  
-	let side = side[0] as char;
+	let id = as_u64_be8(&data[11..19]);
+	
+	let side = data[19] as char;
 
-	let mut shares = [0; 4];
-	f.read_exact(&mut shares)?;  
-	let shares = as_u32_be4(&shares) as u32;
+	let shares = as_u32_be4(&data[20..24]);
 
-	let mut stock_buff = [0; 8];
-	f.read_exact(&mut stock_buff)?;
-	let stock_name = String::from_utf8_lossy(&stock_buff).to_string();
+	let stock_name = String::from_utf8_lossy(&data[24..32]).to_string();
 
-	let mut price = [0; 4];
-	f.read_exact(&mut price)?;  
-	let price = as_u32_be4(&price) as u32;
+	let price = as_u32_be4(&data[32..36]);
+
 	let dprice = price as f32 / 10_000.00;
-
-	if OUTPUT { println!("A {} {} {} {} {}", orn, side, shares, stock_name, dprice);} 
-
-
-//	let &mut book = Book {
-//			buys: Vec::new(),
-//			sells: Vec::new(),
-//	};
-
-//	let mut newbook = false;
-
-//	if books.contains_key(&stock_name) {
-//		book = match books.get_mut(&stock_name) {
-//			Some(bk) => bk,
-//			None => {panic!("Said it was there but couldn't get {}", stock_name)},
-//		}
-//	}
+	if OUTPUT { println!("A {} {} {} {} {}", id, side, shares, stock_name, dprice);} 
 
 	let stock_key = stock_name.clone();
 
@@ -255,7 +196,7 @@ fn process_add_order<R: BufRead>(f: &mut R, orders: &mut HashMap<u64, Order>, bo
 	};
 	
 	let ord = Order {
-		id: orn,
+		id,
 		stock_name,
     	side, 
     	shares,
@@ -264,70 +205,46 @@ fn process_add_order<R: BufRead>(f: &mut R, orders: &mut HashMap<u64, Order>, bo
 	
 	insert_order(book, &ord);
 
-	orders.insert(orn, ord);
+	orders.insert(id, ord);
 	
 	if attribution {
-		let mut skip = [0; 4];
-		f.read_exact(&mut skip)?;  
+		//don't actually care
 	}
 
-	Ok(())
 }
 
-fn process_exec<R: BufRead>(f: &mut R, _stocks: &HashMap<u32, String>, orders: &mut HashMap<u64, Order>, books: &mut HashMap<String, Book>, has_price: bool) -> io::Result<()> {
+fn process_exec(data: &[u8], _stocks: &HashMap<u32, String>, orders: &mut HashMap<u64, Order>, books: &mut HashMap<String, Book>, has_price: bool)  {
 
-	let mut locate = [0; 2];
-	f.read_exact(&mut locate)?;  
+	let _locate = as_u32_be2(&data[1..3]);
 
-	let _locate = as_u32_be2(&locate);
+	let tracking = as_u32_be2(&data[3..5]);
+	if DEBUG { println!("tracking: {}", tracking) };
 
-	//don't think i need to care
-	let mut tracking = [0; 2];
-	f.read_exact(&mut tracking)?;  
+	let _ts = as_u64_be6(&data[5..11]);
+	
+	let id = as_u64_be8(&data[11..19]);
 
-	if DEBUG { println!("tracking: {}", as_u32_be2(&tracking)) };
+	let exec_shares = as_u32_be4(&data[19..23]);
+	
+	let matchnum = as_u64_be8(&data[23..31]);
 
-	let _ts = extract_timestamp(f);
-
-	let mut orn = [0; 8];
-	f.read_exact(&mut orn)?;  
-	let orn = as_u64_be8(&orn);
-
-	let mut exec_shares = [0; 4];
-	f.read_exact(&mut exec_shares)?;  
-	let exec_shares = as_u32_be4(&exec_shares);
-
-	let mut matchnum = [0; 8];
-	f.read_exact(&mut matchnum)?;  
-	let matchnum = as_u64_be8(&matchnum);
-
-
-	let mut book_order = match orders.get_mut(&orn) {
+	let mut book_order = match orders.get_mut(&id) {
 		Some(order) => order,
-		None => panic!("can't find order {}", orn)
+		None => panic!("can't find order {}", id)
 	};
-
-	//hack for testing
-	//let o = Order {stock_name:  String::new(), price: 0, shares: 0, side: 'Z'};
-
-	//ok this hit a lit order, pull it out get the price and side
-
+	
 	let mut side = 'S';
 	if book_order.side == 'S' { side = 'B' }; 
-
 	
 	if has_price {
 
 		//need to decide what to do with cross trades, ignore this for now
 		//probably convert to cancel down and just show a trade later?
-		let mut print_trade = [0; 1];
-		f.read_exact(&mut print_trade)?;  
-
-		if DEBUG { println!("print_trade:{}", print_trade[0] as char); }
+		let print_trade = data[31] as char;
+		
+		if DEBUG { println!("print_trade:{}", print_trade); }
 	
-		let mut price = [0; 4];
-		f.read_exact(&mut price)?;  
-		let price = as_u32_be4(&price);
+		let price = as_u32_be4(&data[32..36]);
 
 		let dprice = price as f32 / 10_000.00;
 		if OUTPUT { println!("I {} {} {} {} {}", matchnum, side, exec_shares, book_order.stock_name, dprice); }
@@ -349,56 +266,31 @@ fn process_exec<R: BufRead>(f: &mut R, _stocks: &HashMap<u32, String>, orders: &
 
 	if book_order.shares == 0 {
 		remove_order(book, book_order);
-		orders.remove(&orn);
+		orders.remove(&id);
 	}
 
-
-
-	Ok(())
 }
 
-fn process_trade<R: BufRead>(f: &mut R, books: &mut HashMap<String, Book>) -> io::Result<()> {
+fn process_trade(data: &[u8], books: &mut HashMap<String, Book>)  {
 
-	let mut locate = [0; 2];
-	f.read_exact(&mut locate)?;  
+	let _locate = as_u32_be2(&data[1..3]);
 
-	let _locate = as_u32_be2(&locate);
+	let tracking = as_u32_be2(&data[3..5]);
+	if DEBUG { println!("tracking: {}", tracking) };
 
-	//don't think i need to care
-	let mut tracking = [0; 2];
-	f.read_exact(&mut tracking)?;  
+	let _ts = as_u64_be6(&data[5..11]);
 
-	if DEBUG { println!("tracking: {}", as_u32_be2(&tracking)) };
+	//these have no values for trade messages
+	let _id = as_u64_be8(&data[11..19]);
+	let _side = data[19] as char;
 
-	let _ts = extract_timestamp(f);
+	let exec_shares = as_u32_be4(&data[20..24]);
 
-	let mut orn = [0; 8];
-	f.read_exact(&mut orn)?;  
-	let orn = as_u64_be8(&orn);
+	let stock_name = String::from_utf8_lossy(&data[24..32]).to_string();
 
-	if DEBUG {println!("trade orn:{}", orn); }
+	let price = as_u32_be4(&data[32..36]);
 
-	let mut side = [0; 1];
-	f.read_exact(&mut side)?;  
-	let side = side[0] as char;
-
-	if DEBUG { println!("trade side:{}", side); }
-
-	let mut exec_shares = [0; 4];
-	f.read_exact(&mut exec_shares)?;  
-	let exec_shares = as_u32_be4(&exec_shares);
-
-	let mut stock_buff = [0; 8];
-	f.read_exact(&mut stock_buff)?;
-	let stock_name = String::from_utf8_lossy(&stock_buff).to_string();
-
-	let mut price = [0; 4];
-	f.read_exact(&mut price)?;  
-	let price = as_u32_be4(&price);
-
-	let mut matchnum = [0; 8];
-	f.read_exact(&mut matchnum)?;  
-	let matchnum = as_u64_be8(&matchnum);
+	let matchnum = as_u64_be8(&data[36..44]);
 
 	let dprice = price as f32 / 10_000.00;
 
@@ -406,7 +298,7 @@ fn process_trade<R: BufRead>(f: &mut R, books: &mut HashMap<String, Book>) -> io
 	let mut side_1 = 'B';
 	let mut side_2 = 'S';
 
-
+	//not sure this handles all situations, might need to actually two pass and stick in before other orrders??
 	match books.get(&stock_name){
 		Some(book) => {
 			// just call the hidden a buy UNLESS the price would collide with sells
@@ -419,48 +311,36 @@ fn process_trade<R: BufRead>(f: &mut R, books: &mut HashMap<String, Book>) -> io
 		None => {},  //could just be totally hidden, then we don't care
 	}
 
-
 	if OUTPUT { println!("H {} {} {} {} {}", matchnum, side_1, exec_shares, stock_name, dprice);	}
 	if OUTPUT { println!("I {} {} {} {} {}", matchnum, side_2, exec_shares, stock_name, dprice);	}		
-
-	Ok(())
+	
 }
 
 
 
-fn process_cancel<R: BufRead>(f: &mut R, orders: &mut HashMap<u64, Order>, books: &mut HashMap<String, Book>, full: bool) -> io::Result<()> {
+fn process_cancel(data: &[u8], orders: &mut HashMap<u64, Order>, books: &mut HashMap<String, Book>, full: bool) {
 
-	let mut locate = [0; 2];
-	f.read_exact(&mut locate)?;  
+	let _locate = as_u32_be2(&data[1..3]);
 
-	let _locate = as_u32_be2(&locate);
+	let tracking = as_u32_be2(&data[3..5]);
+	if DEBUG { println!("tracking: {}", tracking) };
 
-	//don't think i need to care
-	let mut tracking = [0; 2];
-	f.read_exact(&mut tracking)?;  
-
-	if DEBUG { println!("tracking: {}", as_u32_be2(&tracking)) };
-
-	let _ts = extract_timestamp(f);
-
-	let mut orn = [0; 8];
-	f.read_exact(&mut orn)?;  
-	let orn = as_u64_be8(&orn);
-
-	let mut book_order = match orders.get_mut(&orn) {
+	let _ts = as_u64_be6(&data[5..11]);
+	
+	let id = as_u64_be8(&data[11..19]);
+	
+	let mut book_order = match orders.get_mut(&id) {
 		Some(order) => order,
-		None => panic!("can't find order {}", orn)
+		None => panic!("can't find order {}", id)
 	};
 	
 	let mut cancel_shares = book_order.shares;
 
 	if !full {
-		let mut cancel_sharesb = [0; 4];
-		f.read_exact(&mut cancel_sharesb)?;  
-		cancel_shares = as_u32_be4(&cancel_sharesb);
-		if OUTPUT { println!("C {} {}", orn, cancel_shares); }
+		cancel_shares = as_u32_be4(&data[19..23]);
+		if OUTPUT { println!("C {} {}", id, cancel_shares); }
 	} else { 
-		if OUTPUT { println!("X {}", orn); }
+		if OUTPUT { println!("X {}", id); }
 	}
 	
 	book_order.shares = book_order.shares - cancel_shares;
@@ -472,71 +352,52 @@ fn process_cancel<R: BufRead>(f: &mut R, orders: &mut HashMap<u64, Order>, books
 
 	if book_order.shares == 0 {
 		remove_order(book, book_order);
-		orders.remove(&orn);
+		orders.remove(&id);
 	}
 
-
-	Ok(())
 }
 
-fn process_update<R: BufRead>(f: &mut R, orders: &mut HashMap<u64, Order>, books: &mut HashMap<String, Book>) -> io::Result<()> {
+fn process_update(data: &[u8], orders: &mut HashMap<u64, Order>, books: &mut HashMap<String, Book>) {
 
-	let mut locate = [0; 2];
-	f.read_exact(&mut locate)?;  
+	let _locate = as_u32_be2(&data[1..3]);
 
-	let _locate = as_u32_be2(&locate);
+	let tracking = as_u32_be2(&data[3..5]);
+	if DEBUG { println!("tracking: {}", tracking) };
 
-	//don't think i need to care
-	let mut tracking = [0; 2];
-	f.read_exact(&mut tracking)?;  
+	let _ts = as_u64_be6(&data[5..11]);
+	
+	let id = as_u64_be8(&data[11..19]);
+	
+	let nid = as_u64_be8(&data[19..27]);
 
-	if DEBUG { println!("tracking: {}", as_u32_be2(&tracking)) };
+	let new_shares = as_u32_be4(&data[27..31]);
 
-	let _ts = extract_timestamp(f);
+	let new_price = as_u32_be4(&data[31..35]);
 
-	let mut orn = [0; 8];
-	f.read_exact(&mut orn)?;  
-	let orn = as_u64_be8(&orn);
-
-	let mut norn = [0; 8];
-	f.read_exact(&mut norn)?;  
-	let norn = as_u64_be8(&norn);
-
-
-	let mut book_order = match orders.remove(&orn) {
+	let mut book_order = match orders.remove(&id) {
 		Some(order) => order,
-		None => panic!("can't find order {}", orn)
+		None => panic!("can't find order {}", id)
 	};
 
 	let book = match books.get_mut(&book_order.stock_name) {
 		Some(bk) => bk,
 		None => panic!("Can't find a book for {}", book_order.stock_name),
 	} ;
-
 	
 	remove_order(book, &book_order);
 	
-	let mut new_shares = [0; 4];
-	f.read_exact(&mut new_shares)?;  
-	let new_shares = as_u32_be4(&new_shares);
-	
-	let mut new_price = [0; 4];
-	f.read_exact(&mut new_price)?;  
-	let new_price = as_u32_be4(&new_price);
-
+	book_order.id = nid;
 	book_order.price = new_price;
 	book_order.shares = new_shares;
 
 	let dprice = new_price as f32 / 10_000.00;
 	
-	if OUTPUT { println!("U {} {} {} {}", orn, norn, new_shares, dprice);	}
+	if OUTPUT { println!("U {} {} {} {}", id, nid, new_shares, dprice);	}
 
 	insert_order(book, &book_order);
 
-	orders.insert(norn, book_order);	
+	orders.insert(nid, book_order);	
 
-	
-	Ok(())
 }
 
 
@@ -562,7 +423,7 @@ fn main() -> io::Result<()> {
     let mut f = BufReader::with_capacity(1024*1024, fil);
 
 
-    let mut skip = [0; 1024];
+    let mut databuf = [0; 1024];
 
     //probably should initialize this intelligently
     let mut stocks: HashMap<u32, String> = HashMap::with_capacity(10_000);
@@ -584,40 +445,38 @@ fn main() -> io::Result<()> {
 
 	    let msg_len = msg_len as usize;
 
+		f.read_exact(&mut databuf[..msg_len])?;
+
 	    //println!("Len: {}", msg_len);
+		let msg_type = databuf[0] as char;
+	    
+	    if DEBUG {println!("got {} with len {} ", msg_type, msg_len); }
 
-	    let mut msg_type = [0; 1];
+	    match  msg_type {
 
-	    f.read_exact(&mut msg_type)?;  
-
-	    if DEBUG {println!("got {} with len {} ", msg_type[0] as char, msg_len); }
-
-	    match msg_type[0] as char {
-
-	    	'S' => match process_system_event(&mut f){
-	    		Ok('C') => break,
-	    		Err(why) => panic!("couldn't read: {}", why),
-	    		_ => {}
-
-	    	},
+	    	'S' => match process_system_event(&databuf[..msg_len]) {
+				'C' => break,
+				_ => continue, //noop	
+				},
+			
 	    	
-	    	'R' => process_stock_map(&mut f, &mut stocks)?,
-	    	'A' => process_add_order(&mut f, &mut orders, &mut books, false)?,
-			'F' => process_add_order(&mut f, &mut orders, &mut books, true)?,
+	    	'R' => process_stock_map(&databuf[..msg_len], &mut stocks),
+	    	'A' => process_add_order(&databuf[..msg_len], &mut orders, &mut books, false),
+			'F' => process_add_order(&databuf[..msg_len], &mut orders, &mut books, true),
 
-			'E' => process_exec(&mut f, &stocks, &mut orders, &mut books, false)?,
-			'C' => process_exec(&mut f, &stocks, &mut orders, &mut books, true)?,
+			'E' => process_exec(&databuf[..msg_len], &stocks, &mut orders, &mut books, false),
+			'C' => process_exec(&databuf[..msg_len], &stocks, &mut orders, &mut books, true),
 
-			'X' => process_cancel(&mut f,  &mut orders, &mut books, false)?,
-			'D' => process_cancel(&mut f,  &mut orders, &mut books, true)?,
+			'X' => process_cancel(&databuf[..msg_len],  &mut orders, &mut books, false),
+			'D' => process_cancel(&databuf[..msg_len],  &mut orders, &mut books, true),
 
-			'U' => process_update(&mut f,  &mut orders, &mut books)?,
+			'U' => process_update(&databuf[..msg_len],  &mut orders, &mut books),
 
-			'P' => process_trade(&mut f, &mut books)?,
+			'P' => process_trade(&databuf[..msg_len], &mut books),
 
 	    	_ => {
-	    		f.read_exact(&mut skip[..msg_len-1])?;  //don't care for now	
-	    	}
+	    		 //don't care for now	
+	    		}
 	    }
 		counter = counter + 1;
 		if counter % 100_000 == 0 {
